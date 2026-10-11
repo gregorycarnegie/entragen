@@ -43,6 +43,7 @@ pub(crate) fn parse_workbook(bytes: &[u8], required: &[&str]) -> Result<ParsedDa
 mod tests {
     use super::*;
     use crate::parse_any;
+    use rstest::rstest;
 
     // Generated, not hand-edited; regenerate with common/fixtures/mkxlsx.py.
     const STUDENTS_XLSX: &[u8] = include_bytes!("../fixtures/students.xlsx");
@@ -56,25 +57,20 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn parse_workbook_reads_xlsx_and_ods_identically() {
-        // Same sheet, two container formats: the caller should not be able to tell.
-        for (label, bytes) in [("xlsx", STUDENTS_XLSX), ("ods", STUDENTS_ODS)] {
-            let parsed = parse_workbook(bytes, &["Name", "Class"])
-                .unwrap_or_else(|e| panic!("{label} should parse: {e}"));
-
-            assert_eq!(
-                parsed.headers,
-                vec!["Name".to_string(), "Year".to_string(), "Class".to_string()],
-                "{label} headers"
-            );
-            assert_eq!(parsed.rows, alice_and_bob(), "{label} rows");
-        }
+    #[rstest]
+    #[case::xlsx(STUDENTS_XLSX)]
+    #[case::ods(STUDENTS_ODS)]
+    fn parse_workbook_reads_xlsx_and_ods_identically(#[case] bytes: &[u8]) {
+        let parsed = parse_workbook(bytes, &["Name", "Class"]).expect("workbook should parse");
+        assert_eq!(parsed.headers, ["Name", "Year", "Class"]);
+        assert_eq!(parsed.rows, alice_and_bob());
     }
 
-    #[test]
-    fn parse_workbook_reports_missing_required_column() {
-        let err = parse_workbook(STUDENTS_XLSX, &["Name", "House"])
+    #[rstest]
+    #[case::xlsx(STUDENTS_XLSX)]
+    #[case::ods(STUDENTS_ODS)]
+    fn parse_workbook_reports_missing_required_column(#[case] bytes: &[u8]) {
+        let err = parse_workbook(bytes, &["Name", "House"])
             .expect_err("missing required column should fail");
 
         match err {
@@ -90,19 +86,14 @@ mod tests {
         assert!(matches!(err, ParseError::EmptyFile));
     }
 
-    #[test]
-    fn parse_any_dispatches_on_content_not_on_a_filename() {
-        // A workbook and a CSV of the same sheet land on the same ParsedData.
-        for (label, bytes) in [
-            ("xlsx", STUDENTS_XLSX.to_vec()),
-            ("ods", STUDENTS_ODS.to_vec()),
-            ("csv", b"Name,Year,Class\nAlice,7,7A\n\nBob\n".to_vec()),
-        ] {
-            let parsed = parse_any(&bytes, &["Name", "Class"])
-                .unwrap_or_else(|e| panic!("{label} should parse: {e}"));
-
-            assert_eq!(parsed.rows, alice_and_bob(), "{label} rows");
-        }
+    #[rstest]
+    #[case::xlsx(STUDENTS_XLSX)]
+    #[case::ods(STUDENTS_ODS)]
+    #[case::csv(b"Name,Year,Class\nAlice,7,7A\n\nBob\n")]
+    fn parse_any_dispatches_on_content_not_on_a_filename(#[case] bytes: &[u8]) {
+        let parsed = parse_any(bytes, &["Name", "Class"]).expect("file should parse");
+        assert_eq!(parsed.headers, ["Name", "Year", "Class"]);
+        assert_eq!(parsed.rows, alice_and_bob());
     }
 
     #[test]

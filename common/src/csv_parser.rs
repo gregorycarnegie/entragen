@@ -38,6 +38,8 @@ pub(crate) fn parse_csv(text: &str, required: &[&str]) -> Result<ParsedData, Par
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use rstest::rstest;
 
     #[test]
     fn parse_csv_trims_headers_skips_empty_rows_and_pads_short_rows() {
@@ -68,21 +70,61 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parse_csv_reports_missing_required_column() {
-        let err = parse_csv("Name,Email\nAlice,alice@example.com\n", &["Year"])
+    #[rstest]
+    #[case::absent("Year")]
+    #[case::case_sensitive("name")]
+    fn parse_csv_reports_missing_required_column(#[case] required: &str) {
+        let err = parse_csv("Name,Email\nAlice,alice@example.com\n", &[required])
             .expect_err("missing required column should fail");
 
         match err {
-            ParseError::MissingColumn(column) => assert_eq!(column, "Year"),
+            ParseError::MissingColumn(column) => assert_eq!(column, required),
             other => panic!("expected MissingColumn, got {other:?}"),
         }
     }
 
-    #[test]
-    fn parse_csv_reports_empty_file_when_headers_are_blank() {
-        let err = parse_csv(", ,\n", &[]).expect_err("blank headers should fail");
+    #[rstest]
+    #[case::empty("")]
+    #[case::bom_only("\u{FEFF}")]
+    #[case::blank_headers(", ,\n")]
+    #[case::whitespace(" \t\r\n")]
+    fn parse_csv_reports_empty_file_when_headers_are_blank(#[case] input: &str) {
+        let err = parse_csv(input, &[]).expect_err("blank headers should fail");
 
         assert!(matches!(err, ParseError::EmptyFile));
+    }
+
+    #[rstest]
+    #[case::quoted("\"Ada, A\",\"a\"\"b\"\n", &["Ada, A", "a\"b"])]
+    #[case::multiline("\"Ada\nLovelace\",7\r\n", &["Ada\nLovelace", "7"])]
+    #[case::short("Ada\n", &["Ada", ""])]
+    #[case::long("Ada,7,extra\n", &["Ada", "7", "extra"])]
+    #[case::preserves_spaces(" Ada , 7 \n", &[" Ada ", " 7 "])]
+    fn parse_csv_preserves_fields(#[case] record: &str, #[case] expected: &[&str]) {
+        let parsed = parse_csv(&format!("Name,Year\n{record}"), &["Name", "Year"]).unwrap();
+        assert_eq!(parsed.rows, vec![expected]);
+    }
+
+    proptest! {
+        #[test]
+        fn csv_round_trip_preserves_unicode_fields_and_pads_short_rows(
+            records in prop::collection::vec(prop::collection::vec("(?s).{0,30}", 0..5), 0..20)
+        ) {
+            let mut writer = csv::WriterBuilder::new().flexible(true).from_writer(Vec::new());
+            writer.write_record(["Name", "Year", "Class"]).unwrap();
+            let mut expected = Vec::new();
+            for (i, fields) in records.into_iter().enumerate() {
+                // An anchor keeps an all-blank generated row from being intentionally skipped.
+                let mut row = vec![format!("student-{i}")];
+                row.extend(fields);
+                writer.write_record(&row).unwrap();
+                row.resize(row.len().max(3), String::new());
+                expected.push(row);
+            }
+            let bytes = writer.into_inner().unwrap();
+            let parsed = crate::parse_any(&bytes, &["Name", "Year", "Class"]).unwrap();
+            prop_assert_eq!(parsed.headers, ["Name", "Year", "Class"]);
+            prop_assert_eq!(parsed.rows, expected);
+        }
     }
 }

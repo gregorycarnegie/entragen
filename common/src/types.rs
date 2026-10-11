@@ -20,19 +20,28 @@ impl ParsedData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn parsed_data_finds_columns_and_returns_default_for_missing_values() {
+    #[rstest]
+    #[case::first("Name", &["Ada", "ada@example.com"], Some(0), "Ada")]
+    #[case::second("Email", &["Ada", "ada@example.com"], Some(1), "ada@example.com")]
+    #[case::missing_column("House", &["Ada"], None, "")]
+    #[case::case_sensitive("name", &["Ada"], None, "")]
+    #[case::short_row("Email", &["Ada"], Some(1), "")]
+    #[case::empty_row("Name", &[], Some(0), "")]
+    fn parsed_data_finds_columns_and_returns_default_for_missing_values(
+        #[case] column: &str,
+        #[case] row: &[&str],
+        #[case] index: Option<usize>,
+        #[case] expected: &str,
+    ) {
         let data = ParsedData {
             headers: vec!["Name".to_string(), "Email".to_string()],
-            rows: vec![vec!["Ada".to_string(), "ada@example.com".to_string()]],
+            rows: vec![row.iter().map(|s| s.to_string()).collect()],
         };
 
-        assert_eq!(data.col_idx("Email"), Some(1));
-        assert_eq!(data.col_idx("House"), None);
-        assert_eq!(data.get(&data.rows[0], "Name"), "Ada");
-        assert_eq!(data.get(&data.rows[0], "House"), "");
-        assert_eq!(data.get(&["Only name".to_string()], "Email"), "");
+        assert_eq!(data.col_idx(column), index);
+        assert_eq!(data.get(&data.rows[0], column), expected);
     }
 }
 

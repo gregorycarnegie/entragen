@@ -107,7 +107,7 @@ re-check cycle and can retire a real gap as unreachable.
 ## Tooling notes
 
 - `cargo-mutants` 27.1 and `cargo-nextest` 0.9.140 are both installed. mutants
-  drives plain `cargo test` by default, which is right for 17 fast unit tests —
+  drives plain `cargo test` by default, which is right for these fast unit tests —
   `--test-tool nextest` buys nothing at this size.
 - No `--gitignore` flag needed: `target/` and `dist/` are ignored and there are no
   nested git repos to trip the tree copy.
@@ -117,6 +117,5 @@ re-check cycle and can retire a real gap as unreachable.
   `tempfile`, no filesystem.
 - For a parameterised relationship (CSV short-row padding, tag
   de-duplication) a `proptest` over many shapes kills a whole class of mutants
-  where hand-picked values cannot. It is **not** a dependency yet — add it as a
-  `common` dev-dependency only when a hand-written fixture genuinely cannot
-  cover the case.
+  where hand-picked values cannot. It is a `common` dev-dependency; use it for
+  invariants across generated inputs and `rstest` for named input cases.

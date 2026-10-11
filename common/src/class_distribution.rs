@@ -241,6 +241,8 @@ pub fn process(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use rstest::rstest;
 
     fn parsed(headers: &[&str], rows: Vec<Vec<&str>>) -> ParsedData {
         ParsedData {
@@ -300,12 +302,147 @@ mod tests {
         )
     }
 
-    #[test]
-    fn parse_tags_splits_deduplicates_and_sorts_tokens() {
-        assert_eq!(
-            parse_tags(" 7MA,8SC\n7MA\tScience "),
-            vec!["7MA".to_string(), "8SC".to_string(), "Science".to_string()]
+    #[rstest]
+    #[case::mixed(" 7MA,8SC\n7MA\tScience ", &["7MA", "8SC", "Science"])]
+    #[case::empty("", &[])]
+    #[case::separators(", ,\r\n\t\u{2003}", &[])]
+    #[case::unicode("数学\u{2003}SCI,数学", &["SCI", "数学"])]
+    #[case::case_preserved("mat,MAT,mat", &["MAT", "mat"])]
+    fn parse_tags_splits_deduplicates_and_sorts_tokens(
+        #[case] input: &str,
+        #[case] expected: &[&str],
+    ) {
+        assert_eq!(parse_tags(input), expected);
+    }
+
+    #[rstest]
+    #[case::emails_win(" Year 7 ", "Year 8", "Year 7")]
+    #[case::class_fallback(" \t", " Year 8 ", "Year 8")]
+    #[case::unspecified("", " \t", "Unspecified")]
+    fn process_resolves_year_group(
+        #[case] email_year: &str,
+        #[case] class_year: &str,
+        #[case] expected: &str,
+        #[values(false, true)] split: bool,
+    ) {
+        let emails = parsed(
+            &["Admission Number", "Student email", "Year Group Name"],
+            vec![vec!["A1", " ALICE@school.org ", email_year]],
         );
+        let classes = parsed(
+            &[
+                "AdmissionNo",
+                "StudentClassList",
+                "StudentYearGroup",
+                "StudentFullName",
+            ],
+            vec![vec![" A1 ", "7mat1", class_year, "Alice"]],
+        );
+        let result = process(
+            &emails,
+            &classes,
+            &entra_data(),
+            &["MAT".into()],
+            split,
+            "stamp",
+        )
+        .unwrap();
+        assert_eq!((result.total, result.matched, result.filtered), (1, 1, 1));
+        assert!(result.warnings.is_empty());
+        assert_eq!(result.year_groups[0].year, expected);
+        assert_eq!(result.year_groups[0].count, 1);
+        assert_eq!(result.files[0].count, 1);
+        let bucket = if split {
+            sanitize_name(expected)
+        } else {
+            "all".into()
+        };
+        assert_eq!(
+            result.files[0].name,
+            format!("distribution_group_{bucket}_MAT_stamp.csv")
+        );
+        assert_eq!(
+            result.files[0].content,
+            format!("{ENTRA_HEADER}\nID-ALICE\n")
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn tags_round_trip_as_a_sorted_set(
+            tokens in prop::collection::vec("[A-Za-z0-9日本語_-]{1,12}", 0..30),
+            separator in prop::sample::select(vec![",", " ", "\t", "\r\n", "\u{2003}"])
+        ) {
+            let mut expected = tokens.clone();
+            expected.sort();
+            expected.dedup();
+            let input = tokens.join(separator);
+            let tags = parse_tags(&format!("{input}{separator}{input}"));
+            prop_assert_eq!(&tags, &expected);
+            prop_assert_eq!(parse_tags(&tags.join(",")), tags);
+        }
+
+        #[test]
+        fn distribution_counts_and_members_ignore_duplicate_class_rows(
+            students in prop::collection::vec((0u8..4, any::<bool>(), any::<bool>(), 1usize..5), 0..25)
+        ) {
+            let mut emails = emails_data();
+            let mut classes = class_list_data();
+            let mut entra = entra_data();
+            emails.rows.clear();
+            classes.rows.clear();
+            entra.rows.clear();
+            let mut expected_by_year = std::collections::BTreeMap::<String, Vec<String>>::new();
+            let mut matched = 0;
+            for (i, (year, selected, has_id, copies)) in students.iter().enumerate() {
+                let adm = format!("A{i}");
+                let email = format!("student{i}@school.org");
+                let id = format!("ID-{i:02}");
+                let year = format!("Year {year}");
+                emails.rows.push(vec![adm.clone(), email.clone(), year.clone()]);
+                let class = if *selected { "7mAt1" } else { "7SCI1" };
+                for _ in 0..*copies {
+                    classes.rows.push(vec![adm.clone(), class.into(), year.clone(), "Student".into()]);
+                }
+                if *has_id {
+                    entra.rows.push(vec![id.clone(), email]);
+                    matched += 1;
+                    if *selected {
+                        expected_by_year.entry(year).or_default().push(id);
+                    }
+                }
+            }
+            let expected_ids = expected_by_year.values().flatten().cloned().collect::<std::collections::BTreeSet<_>>();
+            for split in [false, true] {
+                let result = process(&emails, &classes, &entra, &["MAT".into()], split, "stamp").unwrap();
+                prop_assert_eq!(result.total, students.len());
+                prop_assert_eq!(result.matched, matched);
+                prop_assert_eq!(result.filtered, expected_ids.len());
+                let stats = result.year_groups.iter().map(|s| (s.year.clone(), s.count)).collect::<Vec<_>>();
+                let expected_stats = expected_by_year.iter().map(|(year, ids)| (year.clone(), ids.len())).collect::<Vec<_>>();
+                prop_assert_eq!(stats, expected_stats);
+                prop_assert_eq!(result.files.len(), if split { expected_by_year.len() } else { 1 });
+                let mut actual_ids = std::collections::BTreeSet::new();
+                for file in &result.files {
+                    prop_assert!(file.content.starts_with(&format!("{ENTRA_HEADER}\n")), "missing Entra header");
+                    let ids = file.content.lines().skip(3).filter(|line| !line.is_empty()).collect::<Vec<_>>();
+                    prop_assert_eq!(file.count, ids.len());
+                    prop_assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+                    if split {
+                        let (year, expected) = expected_by_year.iter().find(|(year, _)| {
+                            file.name == format!("distribution_group_{}_MAT_stamp.csv", sanitize_name(year))
+                        }).expect("each file should have an expected year");
+                        prop_assert_eq!(&ids, expected, "wrong members for {}", year);
+                    }
+                    actual_ids.extend(ids.into_iter().map(str::to_string));
+                }
+                prop_assert_eq!(&actual_ids, &expected_ids);
+                classes.rows.reverse();
+                let reversed = process(&emails, &classes, &entra, &["MAT".into()], split, "stamp").unwrap();
+                let files = |r: ClassDistResult| r.files.into_iter().map(|f| (f.name, f.content, f.count)).collect::<Vec<_>>();
+                prop_assert_eq!(files(result), files(reversed));
+            }
+        }
     }
 
     #[test]

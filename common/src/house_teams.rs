@@ -136,6 +136,8 @@ pub fn process(bromcom: &ParsedData, entra: &ParsedData, timestamp: &str) -> Hou
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use rstest::rstest;
 
     fn parsed(headers: &[&str], rows: Vec<Vec<&str>>) -> ParsedData {
         ParsedData {
@@ -144,6 +146,93 @@ mod tests {
                 .into_iter()
                 .map(|row| row.into_iter().map(|value| value.to_string()).collect())
                 .collect(),
+        }
+    }
+
+    #[rstest]
+    #[case::normalized(&[" Red ", " ALICE@school.org ", " Year 7 "], 1, None)]
+    #[case::unknown_email(&["Red", "unknown@school.org", "Year 7"], 1, Some("No Entra ID found"))]
+    #[case::missing_house(&[" \t", "alice@school.org", "Year 7"], 1, Some("Missing house or year group"))]
+    #[case::missing_year(&["Red", "alice@school.org", ""], 1, Some("Missing house or year group"))]
+    #[case::short_row(&["Red", "alice@school.org"], 1, Some("Missing house or year group"))]
+    #[case::blank_email(&["Red", " \t", "Year 7"], 0, None)]
+    #[case::empty_row(&[], 0, None)]
+    fn process_handles_incomplete_rows(
+        #[case] row: &[&str],
+        #[case] processed: usize,
+        #[case] reason: Option<&str>,
+    ) {
+        let bromcom = parsed(
+            &["House(s)", "Student email", "Year Group Name"],
+            vec![row.to_vec()],
+        );
+        let entra = parsed(
+            &["id", "mail"],
+            vec![vec![" ID-ALICE ", " Alice@school.org "]],
+        );
+        let result = process(&bromcom, &entra, "stamp");
+        assert_eq!(result.processed, processed);
+        assert_eq!(result.missing_count, usize::from(reason.is_some()));
+        assert_eq!(result.matched, processed - result.missing_count);
+        assert_eq!(result.files.len(), result.matched);
+        if let Some(reason) = reason {
+            assert_eq!(result.missing[0].reason, reason);
+        } else if processed > 0 {
+            assert_eq!(result.files[0].name, "Red_Year_7_stamp.csv");
+            assert_eq!(
+                result.files[0].content,
+                format!("{ENTRA_HEADER}\nID-ALICE\n")
+            );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn house_groups_conserve_rows_deduplicate_members_and_ignore_row_order(
+            rows in prop::collection::vec((0usize..12, 0usize..4, 0usize..3), 0..40)
+        ) {
+            let houses = ["", "Red House", "Red/House", "Blue"];
+            let years = ["", "Year 7", "Year 8"];
+            let mut bromcom = parsed(&["House(s)", "Student email", "Year Group Name"], vec![]);
+            let mut entra = parsed(&["id", "mail"], vec![]);
+            for i in 0..8 {
+                entra.rows.push(vec![format!("ID-{i}"), format!("student{i}@school.org")]);
+            }
+            let mut expected = std::collections::BTreeMap::<(&str, &str), std::collections::BTreeSet<String>>::new();
+            let mut matched = 0;
+            for &(i, house, year) in &rows {
+                bromcom.rows.push(vec![houses[house].into(), format!(" STUDENT{i}@school.org "), years[year].into()]);
+                if i < 8 && house > 0 && year > 0 {
+                    matched += 1;
+                    expected.entry((houses[house], years[year])).or_default().insert(format!("ID-{i}"));
+                }
+            }
+            let result = process(&bromcom, &entra, "stamp");
+            prop_assert_eq!(result.processed, rows.len());
+            prop_assert_eq!(result.matched, matched);
+            prop_assert_eq!(result.missing_count, rows.len() - matched);
+            prop_assert_eq!(result.missing.len(), result.missing_count);
+            prop_assert_eq!(result.group_count, expected.len());
+            prop_assert_eq!(result.files.len(), expected.len());
+            let names = result.files.iter().map(|f| &f.name).collect::<HashSet<_>>();
+            prop_assert_eq!(names.len(), result.files.len());
+            let mut actual_members = Vec::new();
+            for file in &result.files {
+                prop_assert!(file.content.starts_with(&format!("{ENTRA_HEADER}\n")), "missing Entra header");
+                let ids = file.content.lines().skip(3).map(str::to_string).collect::<Vec<_>>();
+                prop_assert_eq!(file.count, ids.len());
+                prop_assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+                actual_members.push(ids);
+            }
+            actual_members.sort();
+            let mut expected_members = expected.into_values().map(|ids| ids.into_iter().collect::<Vec<_>>()).collect::<Vec<_>>();
+            expected_members.sort();
+            prop_assert_eq!(actual_members, expected_members);
+            bromcom.rows.reverse();
+            entra.rows.reverse();
+            let reversed = process(&bromcom, &entra, "stamp");
+            let files = |r: HouseTeamsResult| r.files.into_iter().map(|f| (f.name, f.content, f.count)).collect::<Vec<_>>();
+            prop_assert_eq!(files(result), files(reversed));
         }
     }
 

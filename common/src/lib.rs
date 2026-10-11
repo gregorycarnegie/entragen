@@ -65,3 +65,56 @@ pub(crate) fn validate_headers(headers: &[String], required: &[&str]) -> Result<
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case::empty("", "_Unspecified")]
+    #[case::blank(" \t\n\u{2003}", "_Unspecified")]
+    #[case::safe(" Year-7_A ", "Year-7_A")]
+    #[case::punctuation("../St-Mary's\\House", "___St-Mary_s_House")]
+    #[case::unicode("日本語 café", "日本語_café")]
+    fn sanitizes_filename_components(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(sanitize_name(input), expected);
+    }
+
+    #[rstest]
+    #[case::no_headers(&[], &[], Some(ParseError::EmptyFile))]
+    #[case::blank_headers(&["", ""], &["Name"], Some(ParseError::EmptyFile))]
+    #[case::no_requirements(&["Name"], &[], None)]
+    #[case::reordered(&["Email", "Name"], &["Name", "Email"], None)]
+    #[case::case_sensitive(&["name"], &["Name"], Some(ParseError::MissingColumn("Name".into())))]
+    #[case::first_missing(&["Name"], &["Year", "Email"], Some(ParseError::MissingColumn("Year".into())))]
+    fn validates_required_headers(
+        #[case] headers: &[&str],
+        #[case] required: &[&str],
+        #[case] expected: Option<ParseError>,
+    ) {
+        let headers = headers.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let actual = validate_headers(&headers, required);
+        match expected {
+            None => assert!(actual.is_ok()),
+            Some(ParseError::EmptyFile) => assert!(matches!(actual, Err(ParseError::EmptyFile))),
+            Some(ParseError::MissingColumn(expected)) => {
+                assert!(
+                    matches!(actual, Err(ParseError::MissingColumn(column)) if column == expected)
+                );
+            }
+            other => panic!("unexpected test expectation: {other:?}"),
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn sanitized_names_are_nonempty_safe_and_idempotent(input in ".{0,100}") {
+            let sanitized = sanitize_name(&input);
+            prop_assert!(!sanitized.is_empty());
+            prop_assert!(sanitized.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'));
+            prop_assert_eq!(sanitize_name(&sanitized), sanitized);
+        }
+    }
+}

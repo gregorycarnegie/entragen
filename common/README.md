@@ -70,6 +70,16 @@ with nothing but the Python standard library, so there is no `openpyxl` to
 install and no committed binary you cannot reproduce. Edit the row tables in
 that script and re-run it; never hand-edit the `.xlsx` or `.ods`.
 
+`rstest` covers named input cases for parsers, column lookup, filename
+sanitization, and matching/year-group rules. `proptest` checks Unicode CSV
+round trips, tag sets, safe filename components, and generator counts,
+deduplication, membership, and row-order independence. Both are dev dependencies.
+Property tests run with the normal test command above; to increase generated
+cases, set `PROPTEST_CASES` (for example, `PROPTEST_CASES=1024 cargo test -p common`
+on Unix, or `$env:PROPTEST_CASES=1024; cargo test -p common` in PowerShell).
+Commit any `common/proptest-regressions/` files produced by a failing property
+alongside its fix so the minimized counterexample is replayed in later runs.
+
 Test quality is measured with `cargo-mutants` rather than line coverage; see
 `.claude/skills/run-mutants/SKILL.md` for the current baseline and the fixture
 rules that keep it there.

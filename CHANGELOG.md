@@ -2,6 +2,17 @@
 
 Notable changes to entragen are documented here.
 
+## 1.3.2 - 2026-10-11
+
+### Added
+
+- Added parameterized `rstest` coverage for parsers, column lookup, filename sanitization, and matching rules.
+- Added `proptest` coverage for Unicode CSV round trips, tag sets, deduplication, generator counts, membership, and row-order independence.
+
+### Changed
+
+- Updated Rust dependencies and documented the property-test workflow.
+
 ## 1.3.1 - 2026-08-30
 
 ### Fixed
