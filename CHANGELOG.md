@@ -4,6 +4,10 @@ Notable changes to entragen are documented here.
 
 ## 1.3.2 - 2026-10-11
 
+### Fixed
+
+- Updated `server_fn_macro_default` to 0.8.6 so the Leptos macros use compatible `syn` types and CI builds successfully.
+
 ### Added
 
 - Added parameterized `rstest` coverage for parsers, column lookup, filename sanitization, and matching rules.
